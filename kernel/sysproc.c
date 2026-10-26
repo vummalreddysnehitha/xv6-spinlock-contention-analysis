@@ -23,6 +23,12 @@ sys_getpid(void)
 }
 
 uint64
+sys_getcontention(void)
+{
+  return get_contention_count();
+}
+
+uint64
 sys_fork(void)
 {
   return kfork();

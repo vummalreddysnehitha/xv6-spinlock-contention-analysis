@@ -8,6 +8,8 @@
 #include "proc.h"
 #include "defs.h"
 
+static uint64 contention_count = 0;
+
 void
 initlock(struct spinlock *lk, char *name)
 {
@@ -21,24 +23,33 @@ initlock(struct spinlock *lk, char *name)
 void
 acquire(struct spinlock *lk)
 {
-  push_off(); // disable interrupts to avoid deadlock.
+  push_off();
   if (holding(lk))
     panic("acquire");
 
-  // On RISC-V, __atomic_exchange_n turns into an atomic swap:
-  //   a5 = 1
-  //   s1 = &lk->locked
-  //   amoswap.w.aq a5, a5, (s1)
-  //
-  // Passing __ATOMIC_ACQUIRE to __atomic_exchange_n tells
-  // the C compiler and the processor to not move loads or stores
-  // past this point, to ensure that the critical section's memory
-  // references happen strictly after the lock is acquired.
-  while (__atomic_exchange_n(&lk->locked, 1, __ATOMIC_ACQUIRE) != 0)
-    ;
+  uint64 spins = 0;
 
-  // Record info about lock acquisition for holding() and debugging.
+  while (__atomic_exchange_n(&lk->locked, 1, __ATOMIC_ACQUIRE) != 0) {
+    spins++;
+    __atomic_fetch_add(&contention_count, 1, __ATOMIC_RELAXED);
+  }
+
+  __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
   lk->cpu = mycpu();
+
+  // Report contention for the buffer-cache lock.
+  if (spins > 0 && lk->name != 0 &&
+      lk->name[0] == 'b' &&
+      lk->name[1] == 'c' &&
+      lk->name[2] == 'a' &&
+      lk->name[3] == 'c' &&
+      lk->name[4] == 'h' &&
+      lk->name[5] == 'e' &&
+      lk->name[6] == '\0') {
+    printk("Contention: CPU %d spun %d times for lock '%s'\n",
+           cpuid(), (int)spins, lk->name);
+  }
 }
 
 // Release the lock.
@@ -113,4 +124,10 @@ pop_off(void)
   c->noff -= 1;
   if (c->noff == 0 && c->intena)
     intr_on();
+}
+
+uint64
+get_contention_count(void)
+{
+  return __atomic_load_n(&contention_count, __ATOMIC_RELAXED);
 }
